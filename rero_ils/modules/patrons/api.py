@@ -82,11 +82,14 @@ class Patron(IlsRecord):
     ROLE_LIBRARIAN = 'librarian'
     ROLE_SYSTEM_LIBRARIAN = 'system_librarian'
 
-    ROLES_HIERARCHY = {
-        ROLE_PATRON: [],
-        ROLE_LIBRARIAN: [],
-        ROLE_SYSTEM_LIBRARIAN: [ROLE_LIBRARIAN]
-    }
+    ALL_ROLES = [ROLE_SYSTEM_LIBRARIAN, ROLE_LIBRARIAN, ROLE_PATRON]
+    STAFF_MEMBER_ROLES = [ROLE_SYSTEM_LIBRARIAN, ROLE_LIBRARIAN]
+
+    # Roles management conditions
+    # is_system_librarian_condition = type(
+    #     'SystemLibrarianCondition', (AbstractCondition,), {
+    #         'can': lambda self, patron: current_patron.is_system_librarian
+    #     })()
 
     minter = patron_id_minter
     fetcher = patron_id_fetcher
@@ -99,9 +102,7 @@ class Patron(IlsRecord):
         'city', 'birth_date', 'username', 'phone', 'keep_history'
     ]
 
-    available_roles = [ROLE_SYSTEM_LIBRARIAN, ROLE_LIBRARIAN, ROLE_PATRON]
-
-    def _validate(self, **kwargs):
+    def validate(self, **kwargs):
         """Validate record against schema.
 
         extended validation per record class
@@ -165,9 +166,9 @@ class Patron(IlsRecord):
         is email.
         """
         patron = self.get('patron')
-        if patron and patron.get('communication_channel') == 'email'\
-           and self.get('email') is None\
-           and patron.get('additional_communication_email') is None:
+        if patron and patron.get('communication_channel') == 'email' \
+            and self.get('email') is None \
+                and patron.get('additional_communication_email') is None:
             raise RecordValidationError('At least one email should be defined '
                                         'for an email communication channel.')
 
@@ -218,8 +219,7 @@ class Patron(IlsRecord):
         return self
 
     @classmethod
-    def _anonymize_loans(
-            cls, patron_data=None, old_keep_history=None):
+    def _anonymize_loans(cls, patron_data=None, old_keep_history=None):
         """Anonymize patron loans.
 
         :param patron_data - dictionary representing a patron record.
@@ -361,7 +361,7 @@ class Patron(IlsRecord):
     def _update_roles(self):
         """Update user roles."""
         db_roles = self.user.roles
-        for role in self.available_roles:
+        for role in Patron.ALL_ROLES:
             in_db = role in db_roles
             in_record = role in self.get('roles', [])
             if in_record and not in_db:
@@ -372,34 +372,16 @@ class Patron(IlsRecord):
     def _remove_roles(self):
         """Remove roles."""
         db_roles = self.user.roles
-        for role in self.available_roles:
+        for role in Patron.ALL_ROLES:
             if role in db_roles:
                 self.remove_role(role)
 
     @classmethod
-    def get_reachable_roles(cls, role):
-        """Get list of roles depending on role hierarchy."""
-        if role not in Patron.ROLES_HIERARCHY:
-            return []
-        roles = Patron.ROLES_HIERARCHY[role].copy()
-        roles.append(role)
-        return roles
-
-    @classmethod
-    def get_all_roles_for_role(cls, role):
-        """The list of roles covering given role based on the hierarchy."""
-        roles = [role]
-        for key in Patron.ROLES_HIERARCHY:
-            if role in Patron.ROLES_HIERARCHY[key] and key not in roles:
-                roles.append(key)
-        return roles
-
-    @classmethod
     def get_all_pids_for_organisation(cls, organisation_pid):
         """Get all patron pids for a specific organisation."""
-        query = PatronsSearch()\
-            .filter('term', organisation__pid=organisation_pid)\
-            .source(includes='pid')\
+        query = PatronsSearch() \
+            .filter('term', organisation__pid=organisation_pid) \
+            .source(includes='pid') \
             .scan()
         for hit in query:
             yield hit['pid']
@@ -457,8 +439,8 @@ class Patron(IlsRecord):
         """Get patron by barcode."""
         if not barcode:
             return None
-        result = PatronsSearch()\
-            .filter('term', patron__barcode=barcode)\
+        result = PatronsSearch() \
+            .filter('term', patron__barcode=barcode) \
             .source(includes='pid').scan()
         try:
             patron_pid = next(result).pid
@@ -531,6 +513,8 @@ class Patron(IlsRecord):
         role = _datastore.find_role(role_name)
         _datastore.remove_role_from_user(self.user, role)
         _datastore.commit()
+        # TODO :: when removing the role 'patron' to a user, we should unlink
+        #         all loans related to this patron.
 
     @property
     def initial(self):
@@ -571,9 +555,9 @@ class Patron(IlsRecord):
         from ..loans.api import LoanState
         exclude_states = [
             LoanState.CANCELLED, LoanState.ITEM_RETURNED]
-        results = current_circulation.loan_search_cls()\
-            .filter('term', patron_pid=self.pid)\
-            .exclude('terms', state=exclude_states)\
+        results = current_circulation.loan_search_cls() \
+            .filter('term', patron_pid=self.pid) \
+            .exclude('terms', state=exclude_states) \
             .source().count()
         return results
 
@@ -706,10 +690,12 @@ class Patron(IlsRecord):
 
     def get_valid_subscriptions(self):
         """Get valid subscriptions for a patron."""
+
         def is_subscription_valid(subscription):
             start = datetime.strptime(subscription['start_date'], '%Y-%m-%d')
             end = datetime.strptime(subscription['end_date'], '%Y-%m-%d')
             return start < datetime.now() < end
+
         subs = filter(
             is_subscription_valid,
             self.get('patron', {}).get('subscriptions', []))
